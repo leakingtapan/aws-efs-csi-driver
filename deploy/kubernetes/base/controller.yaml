@@ -1,0 +1,53 @@
+---
+# Controller Service
+kind: StatefulSet
+apiVersion: apps/v1
+metadata:
+  name: efs-csi-controller
+  namespace: kube-system
+spec:
+  serviceName: efs-csi-controller
+  replicas: 1
+  selector:
+    matchLabels:
+      app: efs-csi-controller
+  template:
+    metadata:
+      labels:
+        app: efs-csi-controller
+    spec:
+      nodeSelector:
+        beta.kubernetes.io/os: linux
+      serviceAccount: efs-csi-controller-sa
+      priorityClassName: system-cluster-critical
+      tolerations:
+        - key: CriticalAddonsOnly
+          operator: Exists
+      containers:
+        - name: efs-plugin
+          image: chengpan/aws-efs-csi-driver:latest
+          args :
+            - --endpoint=$(CSI_ENDPOINT)
+            - --logtostderr
+            - --v=5
+          env:
+            - name: CSI_ENDPOINT
+              value: unix:///var/lib/csi/sockets/pluginproxy/csi.sock
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /var/lib/csi/sockets/pluginproxy/
+        - name: csi-provisioner
+          image: quay.io/k8scsi/csi-provisioner:v1.3.0
+          args:
+            - --timeout=5m
+            - --csi-address=$(ADDRESS)
+            - --v=5
+          env:
+            - name: ADDRESS
+              value: /var/lib/csi/sockets/pluginproxy/csi.sock
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /var/lib/csi/sockets/pluginproxy/
+      volumes:
+        - name: socket-dir
+          emptyDir: {}

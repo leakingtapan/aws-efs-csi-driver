@@ -30,19 +30,121 @@ import (
 )
 
 var (
-	nodeCaps             = []csi.NodeServiceCapability_RPC_Type{}
+	nodeCaps = []csi.NodeServiceCapability_RPC_Type{
+		csi.NodeServiceCapability_RPC_STAGE_UNSTAGE_VOLUME,
+	}
 	volumeCapAccessModes = []csi.VolumeCapability_AccessMode_Mode{
 		csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
 		csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER,
 	}
 )
 
+const (
+	Directory         string = "Directory"
+	DirectoryOrCreate string = "DirectoryOrCreate"
+)
+
 func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequest) (*csi.NodeStageVolumeResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "")
+	klog.V(4).Infof("NodeStageVolume: called with args %+v", *req)
+
+	volumeId := req.GetVolumeId()
+	if len(volumeId) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "Volume ID not provided")
+	}
+
+	target := req.GetStagingTargetPath()
+	if len(target) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "Staging target not provided")
+	}
+
+	volCap := req.GetVolumeCapability()
+	if volCap == nil {
+		return nil, status.Error(codes.InvalidArgument, "Volume capability not provided")
+	}
+
+	if !d.isValidVolumeCapabilities([]*csi.VolumeCapability{volCap}) {
+		return nil, status.Error(codes.InvalidArgument, "Volume capability not supported")
+	}
+
+	source := fmt.Sprintf("%s:/", volumeId)
+	klog.V(5).Infof("NodeStageVolume: creating dir %s", target)
+	if err := d.mounter.MakeDir(target); err != nil {
+		return nil, status.Errorf(codes.Internal, "Could not create dir %q: %v", target, err)
+	}
+
+	klog.V(5).Infof("NodeStageVolume: mounting %s at %s", source, target)
+	if err := d.mounter.Mount(source, target, "efs", nil); err != nil {
+		os.Remove(target)
+		return nil, status.Errorf(codes.Internal, "Could not mount %q at %q: %v", source, target, err)
+	}
+
+	var (
+		path     = "/"
+		pathType = ""
+	)
+	volContext := req.GetVolumeContext()
+	for k, v := range volContext {
+		switch strings.ToLower(k) {
+		case "path":
+			if !filepath.IsAbs(v) {
+				return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("Volume context property %q must be an absolute path", k))
+			}
+			path = filepath.Join(path, v)
+		case "type":
+			if v == Directory || v == DirectoryOrCreate {
+				pathType = v
+			} else {
+				return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("Invalid type %s for mount path", v))
+			}
+			//default:
+			//		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("Volume context property %s not supported", k))
+		}
+	}
+
+	// if path type is empty, no check will be performed
+	if pathType == "" {
+		return &csi.NodeStageVolumeResponse{}, nil
+	}
+
+	fullPath := filepath.Join(target, path)
+	exists, err := d.mounter.ExistsPath(fullPath)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("Failed to check whether file %s exists", err))
+	}
+
+	if !exists {
+		if pathType == Directory {
+			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("Mount path %s doesn't exist", path))
+		} else if pathType == DirectoryOrCreate {
+			err := d.mounter.MakeDir(fullPath)
+			if err != nil {
+				return nil, status.Error(codes.Internal, fmt.Sprintf("Failed to make directory %s", fullPath))
+			}
+		}
+	}
+
+	return &csi.NodeStageVolumeResponse{}, nil
 }
 
 func (d *Driver) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolumeRequest) (*csi.NodeUnstageVolumeResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "")
+	klog.V(4).Infof("NodeUnstageVolume: called with args %+v", *req)
+	volumeId := req.GetVolumeId()
+	if len(volumeId) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "Volume ID not provided")
+	}
+
+	target := req.GetStagingTargetPath()
+	if len(target) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "Staging target not provided")
+	}
+
+	klog.V(5).Infof("NodeUnstageVolume: unmounting %s", target)
+	err := d.mounter.Unmount(target)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "Could not unmount %q: %v", target, err)
+	}
+
+	return &csi.NodeUnstageVolumeResponse{}, nil
 }
 
 func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
@@ -72,8 +174,8 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 				return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("Volume context property %q must be an absolute path", k))
 			}
 			path = filepath.Join(path, v)
-		default:
-			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("Volume context property %s not supported", k))
+			//	default:
+			//		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("Volume context property %s not supported", k))
 		}
 	}
 

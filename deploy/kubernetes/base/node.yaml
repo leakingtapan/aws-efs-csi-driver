@@ -25,7 +25,8 @@ spec:
         - name: efs-plugin
           securityContext:
             privileged: true
-          image: amazon/aws-efs-csi-driver:latest
+          image: chengpan/aws-efs-csi-driver:latest
+          imagePullPolicy: Always
           args:
             - --endpoint=$(CSI_ENDPOINT)
             - --logtostderr
@@ -93,5 +94,4 @@ spec:
           hostPath:
             path: /var/lib/kubelet/plugins/efs.csi.aws.com/
             type: DirectoryOrCreate
-
 

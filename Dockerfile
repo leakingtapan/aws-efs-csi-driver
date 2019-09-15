@@ -14,6 +14,7 @@
 
 FROM golang:1.12.7-stretch as builder
 WORKDIR /go/src/github.com/kubernetes-sigs/aws-efs-csi-driver
+ENV GO111MODULE off
 ADD . .
 RUN make
 
